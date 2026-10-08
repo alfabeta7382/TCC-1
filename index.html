@@ -1,0 +1,621 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Biblioteca Escolar</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<div id="login" class="login hidden">
+  <div class="card">
+    <h2>📚 Biblioteca Escolar</h2>
+    <label class="field">E-mail<input id="em" type="email" autocomplete="username"></label>
+    <label class="field">Senha<input id="pw" type="password" autocomplete="current-password" onkeydown="if(event.key=='Enter')entrar()"></label>
+    <button class="btn" onclick="entrar()">Entrar</button>
+  </div>
+</div>
+
+<div id="app" class="app hidden">
+  <aside class="side">
+    <div class="brand">📚 Biblioteca</div>
+    <nav id="nav"></nav>
+    <button class="btn ghost" onclick="sair()">Sair</button>
+  </aside>
+  <div class="content">
+    <h1 id="title"></h1>
+    <section id="main"></section>
+  </div>
+</div>
+
+<div id="modal" class="overlay hidden" onclick="if(event.target==this)closeM()"><div class="dialog" id="dlg"></div></div>
+<div id="toast"></div>
+
+<script>
+const STORAGE_KEY = 'biblioteca_local_data';
+const SESSION_KEY = 'biblioteca_local_session';
+const $ = s => document.querySelector(s);
+
+const defaultData = {
+  users: [
+    { id: 'u1', matricula: '001', nome: 'Maria Silva', turma: '7A', ativo: true },
+    { id: 'u2', matricula: '002', nome: 'João Souza', turma: '8B', ativo: true }
+  ],
+  books: [
+    { id: 'b1', titulo: 'Dom Casmurro', autor: 'Machado de Assis', quantidade: 3 },
+    { id: 'b2', titulo: 'A Revolução dos Bichos', autor: 'George Orwell', quantidade: 2 }
+  ],
+  visits: [],
+  loans: []
+};
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+const fd = d => d ? new Date(d).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+const hoje = () => new Date().toLocaleDateString('sv');
+const ini = d => new Date(d + 'T00:00:00').toISOString();
+const fim = d => new Date(d + 'T23:59:59').toISOString();
+const grupo = (arr, k) => arr.reduce((o, x) => { const g = k(x); o[g] = (o[g] || 0) + 1; return o; }, {});
+const tbl = (h, r) => `<div class="table-wrap"><table><thead><tr>${h.map(x => `<th>${x}</th>`).join('')}</tr></thead><tbody>${
+  r.map(l => `<tr>${l.map(c => `<td>${c}</td>`).join('')}</tr>`).join('') || `<tr><td class="empty" colspan="${h.length}">Nenhum registro</td></tr>`}</tbody></table></div>`;
+const field = (label, inner) => `<label class="field">${label}${inner}</label>`;
+
+function toast(t) {
+  const el = $('#toast');
+  el.textContent = t;
+  el.classList.add('show');
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+const openM = html => { $('#dlg').innerHTML = html; $('#modal').classList.remove('hidden'); };
+const closeM = () => $('#modal').classList.add('hidden');
+
+function makeId(prefix) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function getSession() {
+  try {
+    return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function setSession(value) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify(value));
+}
+
+function readStore() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
+      return JSON.parse(JSON.stringify(defaultData));
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      users: Array.isArray(parsed.users) ? parsed.users : [],
+      books: Array.isArray(parsed.books) ? parsed.books : [],
+      visits: Array.isArray(parsed.visits) ? parsed.visits : [],
+      loans: Array.isArray(parsed.loans) ? parsed.loans : []
+    };
+  } catch {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
+    return JSON.parse(JSON.stringify(defaultData));
+  }
+}
+
+function writeStore(data) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+function findUserById(id) {
+  return readStore().users.find(u => u.id === id) || null;
+}
+
+function findUserByMatricula(mat) {
+  const query = String(mat || '').trim().toLowerCase();
+  return readStore().users.find(u => String(u.matricula || '').trim().toLowerCase() === query && u.ativo !== false) || null;
+}
+
+function entrar() {
+  const email = ($('#em').value || '').trim() || 'admin@biblioteca.local';
+  const senha = ($('#pw').value || '').trim() || '123456';
+
+  if (!email || !senha) {
+    toast('Preencha e-mail e senha');
+    return;
+  }
+
+  setSession({ email, senha, logged: true });
+  init();
+}
+
+function sair() {
+  localStorage.removeItem(SESSION_KEY);
+  location.reload();
+}
+
+const ICONS = { Visitas:'🚪', Usuários:'👤', Livros:'📖', Empréstimos:'🔁', Relatórios:'📊' };
+
+function init() {
+  const session = getSession();
+  $('#login').classList.toggle('hidden', !!session?.logged);
+  $('#app').classList.toggle('hidden', !session?.logged);
+
+  if (!session?.logged) return;
+
+  $('#nav').innerHTML = Object.keys(V).map(k => `<button class="nav-btn" id="t-${k}" onclick="go('${k}')">${ICONS[k]} ${k}</button>`).join('');
+  go('Visitas');
+}
+
+function go(k) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('on', b.id === 't-' + k));
+  $('#title').textContent = k;
+  V[k]();
+}
+
+function achar(mat) {
+  const u = findUserByMatricula(mat);
+  if (!u) {
+    toast('Matrícula não encontrada');
+    return null;
+  }
+  return u;
+}
+
+const V = {
+  Visitas() {
+    $('#main').innerHTML = `
+      <div class="card"><h3>Registrar entrada / saída</h3>
+        <div class="row">
+          ${field('Matrícula / ID', '<input id="m" autofocus onkeydown="if(event.key==\'Enter\')entrada()">')}
+          <button class="btn ok" onclick="entrada()">Entrada</button>
+          <button class="btn sec" onclick="saida()">Saída</button>
+        </div>
+      </div>
+      <div class="card"><h3>Na biblioteca agora: <span class="badge ok" id="cnt">0</span></h3><div id="agora"></div></div>
+      <div class="card"><h3>Histórico de visitas</h3>
+        <div class="row" style="margin-bottom:12px">
+          ${field('De', `<input type="date" id="d1" value="${hoje()}">`)}
+          ${field('Até', `<input type="date" id="d2" value="${hoje()}">`)}
+          ${field('Matrícula (opcional)', '<input id="q">')}
+          <button class="btn" onclick="loadH()">Filtrar</button>
+        </div>
+        <div id="hist"></div>
+      </div>`;
+
+    loadA();
+    loadH();
+  },
+
+  Usuários() {
+    $('#main').innerHTML = `
+      <div class="card"><h3>Cadastrar aluno</h3>
+        <div class="row">
+          ${field('Matrícula / ID', '<input id="m">')}
+          ${field('Nome', '<input id="n">')}
+          ${field('Turma', '<input id="tu">')}
+          <button class="btn" onclick="addU()">Cadastrar</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="margin-bottom:12px">${field('Buscar', '<input id="q" placeholder="Nome ou matrícula" oninput="loadU()">')}</div>
+        <div id="l"></div>
+      </div>`;
+    loadU();
+  },
+
+  Livros() {
+    $('#main').innerHTML = `
+      <div class="card"><h3>Registrar livro no acervo</h3>
+        <div class="row">
+          ${field('Título', '<input id="ti">')}
+          ${field('Autor (opcional)', '<input id="au">')}
+          ${field('Quantidade', '<input id="qt" type="number" min="1" value="1">')}
+          <button class="btn" onclick="addL()">Registrar</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="margin-bottom:12px">${field('Buscar', '<input id="q" placeholder="Título ou autor" oninput="loadL()">')}</div>
+        <div id="l"></div>
+      </div>`;
+    loadL();
+  },
+
+  Empréstimos() {
+    $('#main').innerHTML = `
+      <div class="card"><h3>Registrar retirada</h3>
+        <div class="row">
+          ${field('Matrícula / ID', '<input id="m">')}
+          ${field('Livro', '<select id="lv"></select>')}
+          <button class="btn" onclick="retirar()">Retirar</button>
+        </div>
+      </div>
+      <div class="card"><h3>Consultar empréstimos</h3>
+        <div class="row" style="margin-bottom:12px">
+          ${field('Situação', '<select id="st" onchange="loadE()"><option value="">Todos</option><option value="a">Em aberto</option><option value="e">Encerrados</option></select>')}
+          ${field('Aluno', '<input id="q" placeholder="Matrícula ou nome" oninput="loadE()">')}
+          ${field('De', '<input type="date" id="d1" onchange="loadE()">')}
+          ${field('Até', '<input type="date" id="d2" onchange="loadE()">')}
+        </div>
+        <div id="l"></div>
+      </div>`;
+    opts();
+    loadE();
+  },
+
+  Relatórios() {
+    const sete = new Date(Date.now() - 6 * 864e5).toLocaleDateString('sv');
+    $('#main').innerHTML = `
+      <div class="stats" id="kp"></div>
+      <div class="card"><h3>Movimentação por período</h3>
+        <div class="row" style="margin-bottom:12px">
+          ${field('De', `<input type="date" id="d1" value="${sete}">`)}
+          ${field('Até', `<input type="date" id="d2" value="${hoje()}">`)}
+          <button class="btn" onclick="loadR()">Atualizar</button>
+        </div>
+        <div id="mov"></div>
+      </div>
+      <div class="card"><h3>Usuários que mais frequentam</h3><div id="top"></div></div>
+      <div class="card"><h3>Livros atualmente emprestados</h3><div id="emp"></div></div>`;
+    loadR();
+  }
+};
+
+function addU() {
+  const data = readStore();
+  const matricula = $('#m').value.trim();
+  const nome = $('#n').value.trim();
+  const turma = $('#tu').value.trim();
+
+  if (!matricula || !nome || !turma) {
+    toast('Preencha matrícula, nome e turma');
+    return;
+  }
+
+  if (data.users.some(u => String(u.matricula).toLowerCase() === matricula.toLowerCase())) {
+    toast('Matrícula já cadastrada');
+    return;
+  }
+
+  data.users.push({ id: makeId('u'), matricula, nome, turma, ativo: true });
+  writeStore(data);
+  toast('Aluno cadastrado');
+  V.Usuários();
+}
+
+function loadU() {
+  const q = ($('#q').value || '').trim().toLowerCase();
+  const data = readStore();
+  const users = data.users.filter(u => {
+    if (!q) return true;
+    return String(u.nome).toLowerCase().includes(q) || String(u.matricula).toLowerCase().includes(q);
+  }).sort((a, b) => a.nome.localeCompare(b.nome));
+
+  const contagens = grupo(data.visits, x => x.usuario_id);
+
+  $('#l').innerHTML = tbl(['Matrícula', 'Nome', 'Turma', 'Status', 'Visitas', ''], users.map(u => [
+    esc(u.matricula),
+    esc(u.nome),
+    esc(u.turma),
+    `<span class="badge ${u.ativo !== false ? 'ok' : 'off'}">${u.ativo !== false ? 'Ativo' : 'Inativo'}</span>`,
+    contagens[u.id] || 0,
+    `<button class="btn sm sec" onclick="editU('${u.id}')">Editar</button>
+     <button class="btn sm ghost" onclick="togU('${u.id}',${u.ativo === false})">${u.ativo === false ? 'Ativar' : 'Inativar'}</button>
+     <button class="btn sm danger" onclick="delU('${u.id}')">Excluir</button>`
+  ]));
+}
+
+function editU(id) {
+  const u = findUserById(id);
+  if (!u) return;
+  openM(`<h3>Editar usuário</h3>
+    ${field('Matrícula', `<input value="${esc(u.matricula)}" disabled>`) }
+    ${field('Nome', `<input id="en" value="${esc(u.nome)}">`)}
+    ${field('Turma', `<input id="et" value="${esc(u.turma)}">`)}
+    <div class="row end">
+      <button class="btn ghost" onclick="closeM()">Cancelar</button>
+      <button class="btn" onclick="saveU('${id}')">Salvar</button>
+    </div>`);
+}
+
+function saveU(id) {
+  const data = readStore();
+  const user = data.users.find(u => u.id === id);
+  if (!user) return;
+
+  user.nome = $('#en').value.trim();
+  user.turma = $('#et').value.trim();
+  writeStore(data);
+  closeM();
+  toast('Dados atualizados');
+  loadU();
+}
+
+function togU(id, ativo) {
+  const data = readStore();
+  const user = data.users.find(u => u.id === id);
+  if (!user) return;
+  user.ativo = !ativo;
+  writeStore(data);
+  loadU();
+}
+
+function delU(id) {
+  if (!confirm('Excluir apaga também as visitas e empréstimos deste aluno. Prefira inativar. Continuar?')) return;
+  const data = readStore();
+  data.users = data.users.filter(u => u.id !== id);
+  data.visits = data.visits.filter(v => v.usuario_id !== id);
+  data.loans = data.loans.filter(l => l.usuario_id !== id);
+  writeStore(data);
+  loadU();
+}
+
+function entrada() {
+  const u = achar($('#m').value);
+  if (!u) return;
+
+  const data = readStore();
+  const aberta = data.visits.some(v => v.usuario_id === u.id && !v.saida);
+  if (aberta) {
+    toast(u.nome + ' já está na biblioteca');
+    return;
+  }
+
+  data.visits.push({ id: makeId('v'), usuario_id: u.id, entrada: new Date().toISOString(), saida: null });
+  writeStore(data);
+  toast('Entrada registrada: ' + u.nome);
+  $('#m').value = '';
+  loadA();
+  loadH();
+}
+
+function saida() {
+  const u = achar($('#m').value);
+  if (!u) return;
+
+  const data = readStore();
+  const visita = data.visits.find(v => v.usuario_id === u.id && !v.saida);
+  if (!visita) {
+    toast('Não há entrada aberta para ' + u.nome);
+    return;
+  }
+
+  visita.saida = new Date().toISOString();
+  writeStore(data);
+  toast('Saída registrada: ' + u.nome);
+  $('#m').value = '';
+  loadA();
+  loadH();
+}
+
+function loadA() {
+  const data = readStore();
+  const visitas = data.visits.filter(v => !v.saida).sort((a, b) => new Date(a.entrada) - new Date(b.entrada));
+  $('#cnt').textContent = visitas.length;
+
+  $('#agora').innerHTML = tbl(['Matrícula', 'Nome', 'Turma', 'Entrada'], visitas.map(v => {
+    const u = findUserById(v.usuario_id);
+    return [esc(u?.matricula || ''), esc(u?.nome || ''), esc(u?.turma || ''), fd(v.entrada)];
+  }));
+}
+
+function loadH() {
+  const data = readStore();
+  const d1 = $('#d1').value;
+  const d2 = $('#d2').value;
+  const q = ($('#q').value || '').trim();
+
+  let visitas = data.visits.filter(v => {
+    const e = new Date(v.entrada);
+    const inRange = (!d1 || e >= new Date(ini(d1))) && (!d2 || e <= new Date(fim(d2)));
+    if (!inRange) return false;
+    if (!q) return true;
+    const u = findUserById(v.usuario_id);
+    return String(u?.matricula || '').toLowerCase() === q.toLowerCase();
+  }).sort((a, b) => new Date(b.entrada) - new Date(a.entrada));
+
+  $('#hist').innerHTML = `<p class="big">Visitas no período: <b>${visitas.length}</b></p>` +
+    tbl(['Matrícula', 'Nome', 'Entrada', 'Saída'], visitas.map(v => {
+      const u = findUserById(v.usuario_id);
+      return [esc(u?.matricula || ''), esc(u?.nome || ''), fd(v.entrada), v.saida ? fd(v.saida) : '<span class="badge ok">Presente</span>'];
+    }));
+}
+
+function addL() {
+  const data = readStore();
+  const titulo = $('#ti').value.trim();
+  const autor = $('#au').value.trim();
+  const quantidade = Number($('#qt').value) || 1;
+
+  if (!titulo) {
+    toast('Informe o título do livro');
+    return;
+  }
+
+  data.books.push({ id: makeId('l'), titulo, autor: autor || null, quantidade });
+  writeStore(data);
+  toast('Livro registrado');
+  V.Livros();
+}
+
+function loadL() {
+  const data = readStore();
+  const q = ($('#q').value || '').trim().toLowerCase();
+  const livros = data.books.filter(l => {
+    if (!q) return true;
+    const busca = `${l.titulo} ${l.autor || ''}`.toLowerCase();
+    return busca.includes(q);
+  }).sort((a, b) => a.titulo.localeCompare(b.titulo));
+
+  const contagem = grupo(data.loans.filter(l => !l.devolucao), x => x.livro_id);
+
+  $('#l').innerHTML = tbl(['Título', 'Autor', 'Total', 'Emprestados', 'Disponíveis', ''], livros.map(l => {
+    const emprestados = contagem[l.id] || 0;
+    const disponiveis = Math.max(0, l.quantidade - emprestados);
+    return [esc(l.titulo), esc(l.autor || '—'), l.quantidade, emprestados, `<span class="badge ${disponiveis > 0 ? 'ok' : 'warn'}">${disponiveis}</span>`,
+      `<button class="btn sm sec" onclick="qtL('${l.id}',${l.quantidade},1)">+1</button>
+       <button class="btn sm ghost" onclick="qtL('${l.id}',${l.quantidade},-1)">−1</button>
+       <button class="btn sm danger" onclick="delL('${l.id}')">Excluir</button>`];
+  }));
+}
+
+function qtL(id, q, d) {
+  const data = readStore();
+  const livro = data.books.find(l => l.id === id);
+  if (!livro) return;
+  const novoValor = q + d;
+  if (novoValor < 0) return;
+  livro.quantidade = novoValor;
+  writeStore(data);
+  loadL();
+}
+
+function delL(id) {
+  if (!confirm('Excluir o livro e todo o histórico de empréstimos dele?')) return;
+  const data = readStore();
+  data.books = data.books.filter(l => l.id !== id);
+  data.loans = data.loans.filter(l => l.livro_id !== id);
+  writeStore(data);
+  loadL();
+}
+
+function opts() {
+  const data = readStore();
+  const contagem = grupo(data.loans.filter(l => !l.devolucao), x => x.livro_id);
+
+  $('#lv').innerHTML = data.books.map(l => {
+    const disponiveis = Math.max(0, l.quantidade - (contagem[l.id] || 0));
+    return `<option value="${l.id}" ${disponiveis < 1 ? 'disabled' : ''}>${esc(l.titulo)} (${disponiveis} disp.)</option>`;
+  }).join('');
+}
+
+function retirar() {
+  const u = achar($('#m').value);
+  if (!u) return;
+
+  const livroId = $('#lv').value;
+  if (!livroId) {
+    toast('Selecione um livro disponível');
+    return;
+  }
+
+  const data = readStore();
+  const livro = data.books.find(l => l.id === livroId);
+  const emprestados = data.loans.filter(l => l.livro_id === livroId && !l.devolucao).length;
+
+  if (!livro || emprestados >= livro.quantidade) {
+    toast('Livro indisponível para empréstimo');
+    return;
+  }
+
+  data.loans.push({ id: makeId('e'), livro_id: livroId, usuario_id: u.id, retirada: new Date().toISOString(), devolucao: null });
+  writeStore(data);
+  toast('Retirada registrada');
+  $('#m').value = '';
+  opts();
+  loadE();
+}
+
+function devolver(id) {
+  const data = readStore();
+  const emprestimo = data.loans.find(l => l.id === id);
+  if (!emprestimo) return;
+  emprestimo.devolucao = new Date().toISOString();
+  writeStore(data);
+  toast('Devolução registrada');
+  opts();
+  loadE();
+}
+
+function loadE() {
+  const data = readStore();
+  const q = ($('#q').value || '').trim().toLowerCase();
+  const situacao = $('#st').value;
+  const d1 = $('#d1').value;
+  const d2 = $('#d2').value;
+
+  let emprestimos = data.loans.filter(l => {
+    const matchStatus = situacao === 'a' ? !l.devolucao : situacao === 'e' ? !!l.devolucao : true;
+    const matchDate = (!d1 || new Date(l.retirada) >= new Date(ini(d1))) && (!d2 || new Date(l.retirada) <= new Date(fim(d2)));
+    const user = findUserById(l.usuario_id);
+    const matchQuery = !q || String(user?.matricula || '').toLowerCase() === q || String(user?.nome || '').toLowerCase().includes(q);
+    return matchStatus && matchDate && matchQuery;
+  }).sort((a, b) => new Date(b.retirada) - new Date(a.retirada));
+
+  $('#l').innerHTML = tbl(['Aluno', 'Matrícula', 'Livro', 'Retirada', 'Devolução', ''], emprestimos.map(l => {
+    const u = findUserById(l.usuario_id);
+    const livro = data.books.find(b => b.id === l.livro_id);
+    return [
+      esc(u?.nome || ''),
+      esc(u?.matricula || ''),
+      esc(livro?.titulo || ''),
+      fd(l.retirada),
+      l.devolucao ? fd(l.devolucao) : '<span class="badge warn">Em aberto</span>',
+      l.devolucao ? '' : `<button class="btn sm" onclick="devolver('${l.id}')">Devolver</button>`
+    ];
+  }));
+}
+
+function loadR() {
+  const data = readStore();
+  const hojeIso = new Date().toISOString().slice(0, 10);
+  const hojeInicio = new Date(hojeIso + 'T00:00:00').toISOString();
+  const hojeFim = new Date(hojeIso + 'T23:59:59').toISOString();
+
+  const visitasHoje = data.visits.filter(v => v.entrada >= hojeInicio && v.entrada <= hojeFim).length;
+  const saidasHoje = data.visits.filter(v => v.saida && v.saida >= hojeInicio && v.saida <= hojeFim).length;
+  const retiradasHoje = data.loans.filter(l => l.retirada >= hojeInicio && l.retirada <= hojeFim).length;
+  const devolucoesHoje = data.loans.filter(l => l.devolucao && l.devolucao >= hojeInicio && l.devolucao <= hojeFim).length;
+  const abertos = data.loans.filter(l => !l.devolucao).length;
+
+  const k = (t, n) => `<div class="stat"><b>${n ?? 0}</b><span>${t}</span></div>`;
+  $('#kp').innerHTML = k('Entraram hoje', visitasHoje) + k('Saíram hoje', saidasHoje) + k('Livros retirados hoje', retiradasHoje) + k('Livros devolvidos hoje', devolucoesHoje) + k('Emprestados agora', abertos);
+
+  const d1 = $('#d1').value;
+  const d2 = $('#d2').value;
+  const visitas = data.visits.filter(v => {
+    const e = new Date(v.entrada);
+    return (!d1 || e >= new Date(ini(d1))) && (!d2 || e <= new Date(fim(d2)));
+  });
+  const emprestimos = data.loans.filter(l => {
+    const e = new Date(l.retirada);
+    return (!d1 || e >= new Date(ini(d1))) && (!d2 || e <= new Date(fim(d2)));
+  });
+
+  const byDateVisits = grupo(visitas, x => new Date(x.entrada).toLocaleDateString('sv'));
+  const byDateLoans = grupo(emprestimos, x => new Date(x.retirada).toLocaleDateString('sv'));
+  const datas = [...new Set([...Object.keys(byDateVisits), ...Object.keys(byDateLoans)])].sort();
+  const maxv = Math.max(1, ...Object.values(byDateVisits), ...Object.values(byDateLoans));
+
+  $('#mov').innerHTML = `<div class="legend"><i style="background:var(--pri)"></i>Entradas<i style="background:var(--warn)"></i>Retiradas de livros</div>
+    <div class="bars">${datas.map(d => `<div class="bar-row"><span>${d.split('-').reverse().slice(0, 2).join('/')}</span><div class="bar-track">
+      <div class="bar a" style="width:${((byDateVisits[d] || 0) / maxv) * 100}%" title="${byDateVisits[d] || 0} entradas"></div>
+      <div class="bar b" style="width:${((byDateLoans[d] || 0) / maxv) * 100}%" title="${byDateLoans[d] || 0} retiradas"></div></div></div>`).join('') || '<p class="legend">Sem movimentação no período.</p>'}</div>` +
+    tbl(['Dia', 'Entradas', 'Retiradas'], datas.map(d => [d.split('-').reverse().join('/'), byDateVisits[d] || 0, byDateLoans[d] || 0])) +
+    `<p class="big" style="margin-top:12px">Total: <b>${visitas.length}</b> entradas e <b>${emprestimos.length}</b> retiradas</p>`;
+
+  const top = grupo(data.visits, x => x.usuario_id);
+  const ranking = Object.entries(top)
+    .map(([id, qtd]) => ({ id, qtd, user: findUserById(id) }))
+    .filter(x => x.user)
+    .sort((a, b) => b.qtd - a.qtd)
+    .slice(0, 10);
+
+  $('#top').innerHTML = tbl(['#', 'Matrícula', 'Nome', 'Visitas'], ranking.map((x, i) => [i + 1, esc(x.user.matricula), esc(x.user.nome), x.qtd]));
+
+  const ativos = data.loans.filter(l => !l.devolucao);
+  $('#emp').innerHTML = tbl(['Aluno', 'Livro', 'Retirada'], ativos.map(l => {
+    const u = findUserById(l.usuario_id);
+    const livro = data.books.find(b => b.id === l.livro_id);
+    return [esc(u?.nome || ''), esc(livro?.titulo || ''), fd(l.retirada)];
+  }));
+}
+
+init();
+</script>
+</body>
+</html>
